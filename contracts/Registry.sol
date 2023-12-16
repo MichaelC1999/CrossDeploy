@@ -57,6 +57,31 @@ contract Registry {
 
     mapping(uint256 => address) public chainIdToConnectedDeployer;
 
+    mapping(bytes32 => mapping(uint256 => address)) private contractsDeployed;
+
+    function addContractDeployed(
+        string memory contractName,
+        uint256 chainId,
+        address deployingUser,
+        address contractAddress
+    ) public {
+        require(
+            msg.sender == deployerAddress,
+            "Only the Deployer may add contracts deployed to registry"
+        );
+        bytes32 nameHash = keccak256(abi.encode(deployingUser, contractName));
+        contractsDeployed[nameHash][chainId] = contractAddress;
+    }
+
+    function getContractAddressByName(
+        string memory contractName,
+        address deployingUser,
+        uint256 chainId
+    ) public view returns (address) {
+        bytes32 nameHash = keccak256(abi.encode(deployingUser, contractName));
+        return contractsDeployed[nameHash][chainId];
+    }
+
     function addConnectedDeployer(uint256 chainId, address deployer) external {
         require(
             msg.sender == deployerAddress,

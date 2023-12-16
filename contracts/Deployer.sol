@@ -35,33 +35,42 @@ contract Deployer {
 
     // ORIGIN FUNCTIONS
     function deployToChain(
-        uint256 chainId,
+        uint256 destinationChainId,
+        string memory contractName,
         bytes memory bytecode,
         bytes memory constructorArgEncode
     ) external {
-        uint256 transferAmount = 10000000000000000;
+        uint256 transferAmount = 20000000000000000;
 
         address acrossSpokePool = registry.chainIdToSpokePoolAddress(
             currentChainId
         );
 
-        require(acrossSpokePool != address(0), "SpokePool invalid");
-
         address connectedDeployer = registry.chainIdToConnectedDeployer(
-            chainId
+            destinationChainId
         );
-
-        require(connectedDeployer != address(0), "ConnectedDeployer invalid");
 
         address wethAddress = registry.getWethAddress(currentChainId);
 
+        require(acrossSpokePool != address(0), "SpokePool invalid");
+        require(connectedDeployer != address(0), "ConnectedDeployer invalid");
         require(wethAddress != address(0), "wethAddress Invalid");
 
-        int64 relayerFeePct = 0; // SHOULD I SET THIS TO BE HARDCODED OR INPUT?
+        (
+            bytes memory acrossMessage,
+            address computedAddress
+        ) = createDeployMessage(
+                bytecode,
+                constructorArgEncode,
+                contractName,
+                destinationChainId
+            );
 
-        bytes memory acrossMessage = createDeployMessage(
-            bytecode,
-            constructorArgEncode
+        registry.addContractDeployed(
+            contractName,
+            destinationChainId,
+            address(0),
+            computedAddress
         );
 
         IERC20(wethAddress).transferFrom(
@@ -84,8 +93,8 @@ contract Deployer {
             connectedDeployer,
             wethAddress,
             transferAmount,
-            chainId,
-            250000000000000000,
+            destinationChainId,
+            400000000000000000,
             uint32(block.timestamp),
             acrossMessage,
             (2 ** 256 - 1)
@@ -94,8 +103,10 @@ contract Deployer {
 
     function createDeployMessage(
         bytes memory creationBytecode,
-        bytes memory argsBytes
-    ) internal view returns (bytes memory) {
+        bytes memory argsBytes,
+        string memory contractName,
+        uint256 destinationChainId
+    ) internal view returns (bytes memory, address) {
         // add constructor args to runtimeBytecode bytecode
         // the creationBytecode is created from the constructor bytes, runtime bytecode, AND THEN the bytes of the argument data
         // abi.encodePacked(creationBytecode, abi.encode(msg.sender));
@@ -104,9 +115,22 @@ contract Deployer {
             argsBytes
         );
 
-        bytes memory message = abi.encode(deploySignatureHash, argsBytecode);
+        bytes32 salt = keccak256(abi.encode(block.number, address(this)));
 
-        return message;
+        bytes memory message = abi.encode(
+            deploySignatureHash,
+            contractName,
+            salt,
+            argsBytecode
+        );
+
+        address computedAddress = computeDestinationAddress(
+            salt,
+            argsBytecode,
+            destinationChainId
+        );
+
+        return (message, computedAddress);
     }
 
     //DESTINATION FUNCTIONS
@@ -118,36 +142,54 @@ contract Deployer {
         bytes memory message
     ) public {
         // Parses message for method and bytecode
-        (bytes4 method, bytes memory data) = extractMessageComponents(message);
+        (
+            bytes4 method,
+            string memory contractName,
+            bytes32 salt,
+            bytes memory data
+        ) = extractMessageComponents(message);
         if (method == deploySignatureHash) {
-            // No need to extract bytecode from data, remaining data bytes is bytecode
+            // Must extract bytes32 salt from data
             // Calls create() functionality
-            deployNewContract(data);
+            deployNewContract(contractName, salt, data);
         }
     }
 
-    function deployNewContract(bytes memory bytecode) public returns (address) {
+    function deployNewContract(
+        string memory contractName,
+        bytes32 salt,
+        bytes memory bytecode
+    ) public returns (address) {
         address instance;
         assembly {
-            instance := create(0, add(bytecode, 0x20), mload(bytecode))
+            instance := create2(0, add(bytecode, 32), mload(bytecode), salt)
             if iszero(extcodesize(instance)) {
                 revert(0, 0)
             }
         }
-        TEST_INSTANCE_ADDRESS = instance;
+        // IMPORTANT - replace address(0) with the sender who initiated deposit() call on other chain
+        registry.addContractDeployed(
+            contractName,
+            currentChainId,
+            address(0),
+            instance
+        );
+
         return instance;
     }
 
     function extractMessageComponents(
         bytes memory message
-    ) internal view returns (bytes4, bytes memory) {
+    ) internal view returns (bytes4, string memory, bytes32, bytes memory) {
         // This function separates the method to execute on the destination contract from the data
-        (bytes4 method, bytes memory data) = abi.decode(
-            message,
-            (bytes4, bytes)
-        );
+        (
+            bytes4 method,
+            string memory contractName,
+            bytes32 salt,
+            bytes memory data
+        ) = abi.decode(message, (bytes4, string, bytes32, bytes));
         // data is abi.encode bytes that have different decode types depending on the method
-        return (method, data);
+        return (method, contractName, salt, data);
     }
 
     //REGISTRY FUNCTIONS
@@ -163,5 +205,21 @@ contract Deployer {
         );
 
         registry.addConnectedDeployer(chainId, deployerConnection);
+    }
+
+    function computeDestinationAddress(
+        bytes32 salt,
+        bytes memory bytecode,
+        uint256 destinationChainId
+    ) public view returns (address) {
+        bytes32 bytecodeHash = keccak256(bytecode);
+
+        address sender = registry.chainIdToConnectedDeployer(
+            destinationChainId
+        );
+        bytes32 _data = keccak256(
+            abi.encodePacked(bytes1(0xff), sender, salt, bytecodeHash)
+        );
+        return address(bytes20(_data << 96));
     }
 }

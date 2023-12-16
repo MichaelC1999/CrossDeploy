@@ -3,7 +3,7 @@ require("@nomicfoundation/hardhat-toolbox");
 require('dotenv').config({ path: __dirname + '/.env' });
 
 module.exports = {
-  defaultNetwork: "mumbai",
+  defaultNetwork: "goerli",
   solidity: {
     version: "0.8.19",
     settings: {
