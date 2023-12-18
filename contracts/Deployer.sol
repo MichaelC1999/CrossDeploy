@@ -40,7 +40,7 @@ contract Deployer {
         bytes memory bytecode,
         bytes memory constructorArgEncode
     ) external {
-        uint256 transferAmount = 20000000000000000;
+        uint256 transferAmount = 2000000000000000;
 
         address acrossSpokePool = registry.chainIdToSpokePoolAddress(
             currentChainId
@@ -73,6 +73,12 @@ contract Deployer {
             computedAddress
         );
 
+        uint256 senderWethBalance = IERC20(wethAddress).balanceOf(msg.sender);
+        require(
+            senderWethBalance >= transferAmount,
+            "Sender has insufficient asset balance"
+        );
+
         IERC20(wethAddress).transferFrom(
             msg.sender,
             address(this),
@@ -89,16 +95,16 @@ contract Deployer {
         IERC20(wethAddress).approve(acrossSpokePool, transferAmount);
 
         // The amount bridged is protocol fee
-        ISpokePool(acrossSpokePool).deposit(
-            connectedDeployer,
-            wethAddress,
-            transferAmount,
-            destinationChainId,
-            400000000000000000,
-            uint32(block.timestamp),
-            acrossMessage,
-            (2 ** 256 - 1)
-        );
+        // ISpokePool(acrossSpokePool).deposit(
+        //     connectedDeployer,
+        //     wethAddress,
+        //     transferAmount,
+        //     destinationChainId,
+        //     400000000000000000,
+        //     uint32(block.timestamp),
+        //     acrossMessage,
+        //     (2 ** 256 - 1)
+        // );
     }
 
     function createDeployMessage(
@@ -129,6 +135,8 @@ contract Deployer {
             argsBytecode,
             destinationChainId
         );
+
+        require(computedAddress != address(0), "Address generation returned 0");
 
         return (message, computedAddress);
     }

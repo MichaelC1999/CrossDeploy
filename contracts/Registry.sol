@@ -100,6 +100,9 @@ contract Registry {
 
     function getWethAddress(uint256 chainId) external view returns (address) {
         address spokePool = chainIdToSpokePoolAddress[chainId];
+        if (spokePool == address(0)) {
+            return address(0);
+        }
         return ISpokePool(spokePool).wrappedNativeToken();
     }
 }
