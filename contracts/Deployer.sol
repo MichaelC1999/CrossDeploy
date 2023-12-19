@@ -16,8 +16,6 @@ contract Deployer {
 
     address deployingUser;
 
-    address public TEST_INSTANCE_ADDRESS;
-
     uint256 currentChainId;
 
     constructor(uint256 chainId) {
@@ -40,8 +38,6 @@ contract Deployer {
         bytes memory bytecode,
         bytes memory constructorArgEncode
     ) external {
-        uint256 transferAmount = 2000000000000000;
-
         address acrossSpokePool = registry.chainIdToSpokePoolAddress(
             currentChainId
         );
@@ -58,6 +54,7 @@ contract Deployer {
 
         (
             bytes memory acrossMessage,
+            bytes32 salt,
             address computedAddress
         ) = createDeployMessage(
                 bytecode,
@@ -73,38 +70,24 @@ contract Deployer {
             computedAddress
         );
 
-        uint256 senderWethBalance = IERC20(wethAddress).balanceOf(msg.sender);
-        require(
-            senderWethBalance >= transferAmount,
-            "Sender has insufficient asset balance"
-        );
-
-        IERC20(wethAddress).transferFrom(
+        tokenExecution(
             msg.sender,
-            address(this),
-            transferAmount
+            wethAddress,
+            acrossSpokePool,
+            200000000000000
         );
 
-        // TEST-CEI REORDER IN PRODUCTION***********************
-        uint256 wethBalance = IERC20(wethAddress).balanceOf(address(this));
-        require(
-            wethBalance >= transferAmount,
-            "Deployer has insufficient asset balance"
+        // The amount bridged is relay +  protocol fee
+        ISpokePool(acrossSpokePool).deposit(
+            connectedDeployer,
+            wethAddress,
+            200000000000000,
+            destinationChainId,
+            400000000000000000,
+            uint32(block.timestamp),
+            acrossMessage,
+            (2 ** 256 - 1)
         );
-        //*************************************** */
-        IERC20(wethAddress).approve(acrossSpokePool, transferAmount);
-
-        // The amount bridged is protocol fee
-        // ISpokePool(acrossSpokePool).deposit(
-        //     connectedDeployer,
-        //     wethAddress,
-        //     transferAmount,
-        //     destinationChainId,
-        //     400000000000000000,
-        //     uint32(block.timestamp),
-        //     acrossMessage,
-        //     (2 ** 256 - 1)
-        // );
     }
 
     function createDeployMessage(
@@ -112,7 +95,7 @@ contract Deployer {
         bytes memory argsBytes,
         string memory contractName,
         uint256 destinationChainId
-    ) internal view returns (bytes memory, address) {
+    ) public view returns (bytes memory, bytes32, address) {
         // add constructor args to runtimeBytecode bytecode
         // the creationBytecode is created from the constructor bytes, runtime bytecode, AND THEN the bytes of the argument data
         // abi.encodePacked(creationBytecode, abi.encode(msg.sender));
@@ -121,7 +104,18 @@ contract Deployer {
             argsBytes
         );
 
-        bytes32 salt = keccak256(abi.encode(block.number, address(this)));
+        uint blockNumber = 10;
+        // IMPORTANT uint blockNumber = block.number;
+        address connectedDeployer = registry.chainIdToConnectedDeployer(
+            destinationChainId
+        );
+
+        require(
+            connectedDeployer != address(0),
+            "Deployer cannot be address(0)"
+        );
+
+        bytes32 salt = keccak256(abi.encode(blockNumber, connectedDeployer));
 
         bytes memory message = abi.encode(
             deploySignatureHash,
@@ -138,7 +132,7 @@ contract Deployer {
 
         require(computedAddress != address(0), "Address generation returned 0");
 
-        return (message, computedAddress);
+        return (message, salt, computedAddress);
     }
 
     //DESTINATION FUNCTIONS
@@ -169,12 +163,24 @@ contract Deployer {
         bytes memory bytecode
     ) public returns (address) {
         address instance;
+        address predictedAddress = computeDestinationAddress(
+            salt,
+            bytecode,
+            currentChainId
+        );
+
         assembly {
             instance := create2(0, add(bytecode, 32), mload(bytecode), salt)
             if iszero(extcodesize(instance)) {
                 revert(0, 0)
             }
         }
+
+        // require(
+        //     predictedAddress == instance,
+        //     "Predicted Address does not match deployment"
+        // );
+
         // IMPORTANT - replace address(0) with the sender who initiated deposit() call on other chain
         registry.addContractDeployed(
             contractName,
@@ -188,7 +194,7 @@ contract Deployer {
 
     function extractMessageComponents(
         bytes memory message
-    ) internal view returns (bytes4, string memory, bytes32, bytes memory) {
+    ) public view returns (bytes4, string memory, bytes32, bytes memory) {
         // This function separates the method to execute on the destination contract from the data
         (
             bytes4 method,
@@ -225,9 +231,37 @@ contract Deployer {
         address sender = registry.chainIdToConnectedDeployer(
             destinationChainId
         );
+        require(
+            sender != address(0),
+            "ConnectedDeployer cannot be address(0) for predictive address."
+        );
         bytes32 _data = keccak256(
             abi.encodePacked(bytes1(0xff), sender, salt, bytecodeHash)
         );
         return address(bytes20(_data << 96));
+    }
+
+    function tokenExecution(
+        address sender,
+        address wethAddress,
+        address acrossSpokePool,
+        uint256 transferAmount
+    ) internal {
+        uint256 senderWethBalance = IERC20(wethAddress).balanceOf(sender);
+        require(
+            senderWethBalance >= transferAmount,
+            "Sender has insufficient asset balance"
+        );
+
+        IERC20(wethAddress).transferFrom(sender, address(this), transferAmount);
+
+        // TEST-CEI REORDER IN PRODUCTION***********************
+        uint256 wethBalance = IERC20(wethAddress).balanceOf(address(this));
+        require(
+            wethBalance >= transferAmount,
+            "Deployer has insufficient asset balance"
+        );
+        //*************************************** */
+        IERC20(wethAddress).approve(acrossSpokePool, transferAmount);
     }
 }
